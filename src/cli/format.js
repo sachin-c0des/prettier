@@ -15,6 +15,9 @@ const { createIgnorer, errors } = require("./prettier-internal.js");
 const { expandPatterns, fixWindowsSlashes } = require("./expand-patterns.js");
 const getOptionsForFile = require("./options/get-options-for-file.js");
 const isTTY = require("./is-tty.js");
+const findCacheFile = require("./find-cache-file.js");
+const FormatResultsCache = require("./format-results-cache.js");
+const { statSafe } = require("./utils.js");
 
 function diff(a, b) {
   return require("diff").createTwoFilesPatch("", "", a, b, "", "", {
@@ -103,16 +106,6 @@ function listDifferent(context, input, options, filename) {
   return true;
 }
 
-function getPerformanceTestFlag(context) {
-  if (context.argv.debugBenchmark) {
-    return "--debug-benchmark";
-  }
-
-  if (context.argv.debugRepeat > 0) {
-    return "--debug-repeat";
-  }
-}
-
 function format(context, input, opt) {
   if (!opt.parser && !opt.filepath) {
     throw new errors.UndefinedParserError(
@@ -175,8 +168,8 @@ function format(context, input, opt) {
     return { formatted: pp, filepath: opt.filepath || "(stdin)\n" };
   }
 
-  /* istanbul ignore next */
-  if (context.argv.debugBenchmark) {
+  const { performanceTestFlag } = context;
+  if (performanceTestFlag?.debugBenchmark) {
     let benchmark;
     try {
       // eslint-disable-next-line import/no-extraneous-dependencies
@@ -207,7 +200,7 @@ function format(context, input, opt) {
         );
       })
       .run({ async: false });
-  } else if (context.argv.debugRepeat > 0) {
+  } else if (performanceTestFlag?.debugRepeat) {
     const repeat = context.argv.debugRepeat;
     context.logger.debug(
       "'--debug-repeat' option found, running formatWithCursor " +
@@ -279,10 +272,10 @@ async function formatStdin(context) {
 
     const formatted = format(context, input, options);
 
-    const performanceTestFlag = getPerformanceTestFlag(context);
+    const { performanceTestFlag } = context;
     if (performanceTestFlag) {
       context.logger.log(
-        `'${performanceTestFlag}' option found, skipped print code to screen.`
+        `'${performanceTestFlag.name}' option found, skipped print code to screen.`
       );
       return;
     }
@@ -299,9 +292,30 @@ async function formatFiles(context) {
   const ignorer = await createIgnorerFromContextOrDie(context);
 
   let numberOfUnformattedFilesFound = 0;
+  const { performanceTestFlag } = context;
 
-  if (context.argv.check && !getPerformanceTestFlag(context)) {
+  if (context.argv.check && !performanceTestFlag) {
     context.logger.log("Checking formatting...");
+  }
+
+  let formatResultsCache;
+  const cacheFilePath = findCacheFile();
+  if (context.argv.cache) {
+    formatResultsCache = new FormatResultsCache(
+      cacheFilePath,
+      context.argv.cacheStrategy || "content"
+    );
+  } else {
+    if (context.argv.cacheStrategy) {
+      context.logger.error(
+        "`--cache-strategy` cannot be used without `--cache`."
+      );
+      process.exit(2);
+    }
+    const stat = await statSafe(cacheFilePath);
+    if (stat) {
+      await fs.unlink(cacheFilePath);
+    }
   }
 
   for await (const pathOrError of expandPatterns(context)) {
@@ -371,16 +385,27 @@ async function formatFiles(context) {
 
     const start = Date.now();
 
+    const isCacheExists = formatResultsCache?.existsAvailableFormatResultsCache(
+      filename,
+      options
+    );
+
     let result;
     let output;
 
     try {
-      result = format(context, input, options);
+      if (isCacheExists) {
+        result = { formatted: input };
+      } else {
+        result = format(context, input, options);
+      }
       output = result.formatted;
     } catch (error) {
       handleError(context, filename, error, printedFilename);
       continue;
     }
+
+    formatResultsCache?.setFormatResultsCache(filename, options);
 
     const isDifferent = output !== input;
 
@@ -389,10 +414,9 @@ async function formatFiles(context) {
       printedFilename.clear();
     }
 
-    const performanceTestFlag = getPerformanceTestFlag(context);
     if (performanceTestFlag) {
       context.logger.log(
-        `'${performanceTestFlag}' option found, skipped print code or write files.`
+        `'${performanceTestFlag.name}' option found, skipped print code or write files.`
       );
       return;
     }
@@ -418,7 +442,12 @@ async function formatFiles(context) {
           process.exitCode = 2;
         }
       } else if (!context.argv.check && !context.argv.listDifferent) {
-        context.logger.log(`${chalk.grey(filename)} ${Date.now() - start}ms`);
+        const message = `${chalk.grey(filename)} ${Date.now() - start}ms`;
+        if (isCacheExists) {
+          context.logger.log(`${message} (cached)`);
+        } else {
+          context.logger.log(message);
+        }
       }
     } else if (context.argv.debugCheck) {
       /* istanbul ignore else */
@@ -440,6 +469,8 @@ async function formatFiles(context) {
       numberOfUnformattedFilesFound += 1;
     }
   }
+
+  formatResultsCache?.reconcile();
 
   // Print check summary based on expected exit code
   if (context.argv.check) {
