@@ -1,8 +1,9 @@
 ---
 framework: jest
+tier: large
 preRun:
      command:
-        - yarn install --dev
+        - yarn install
 preMerge:
   pattern:
     - "./tests/integration/__tests__/*.js"
