@@ -6,11 +6,11 @@ preRun:
 preMerge:
   pattern:
     - "./tests/integration/__tests__/*.js"
-    - "./tests/format/angular/angular/jsfmt.spec.js"
+    - "./tests/format/**/*.spec.js"
 postMerge: 
   pattern: 
     - "./tests/integration/__tests__/*.js"
-    - "./tests/format/angular/angular/jsfmt.spec.js"
+    - "./tests/format/**/*.spec.js"
 postRun:
      command:
         - yarn --version
