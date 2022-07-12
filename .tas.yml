@@ -18,7 +18,4 @@ postMerge:
      PRETTIER_FALLBACK_RESOLVE: true
   pattern: 
     - "./tests/format/**/*.spec.js"
-postRun:
-     command:
-        - yarn --version
 version: 1.2
