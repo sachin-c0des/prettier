@@ -1,6 +1,6 @@
 ---
 framework: jest
-tier: large
+tier: small
 parallelism: 2
 splitMode: file
 preRun:
